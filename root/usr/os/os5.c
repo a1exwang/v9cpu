@@ -1,15 +1,15 @@
-// os5.c -- 
+// os5.c --
 
 #include <u.h>
 
 enum {
   PAGE    = 4096,       // page size
   NOFILE  = 16,         // open files per process
-  USRSTART= 0x40000000, // start of user virt address space  
-  USREND  = 0x40100000, // end of user virt address space   
-  USRPHY  = 32*1024*1024, //  start of user phy address space 
+  USRSTART= 0x40000000, // start of user virt address space
+  USREND  = 0x40100000, // end of user virt address space
+  USRPHY  = 32*1024*1024, //  start of user phy address space
   KERSTART= 0xc0000000, // start of kerne address space
-  KEREND  = 0xc4000000, // end of kernel address space  
+  KEREND  = 0xc4000000, // end of kernel address space
   P2V     = +KERSTART,   // turn a physical address into a virtual address
   V2P     = -KERSTART,   // turn a virtual address into a physical address
   STACKSZ = 0x100000,   // user stack size (1MB)
@@ -38,13 +38,15 @@ enum { // processor fault codes
   FIPAGE, // page fault on opcode fetch
   FWPAGE, // page fault on write
   FRPAGE, // page fault on read
-  USER=16 // user mode exception 
+  USER=16 // user mode exception
 };
 
 
-char pg_mem[19 * 4096]; // page dir + 16 kernel entries + 1 user entry + alignment
-
-int *pg_dir, *pg_tbl[16];
+char pg_mem[30 * 4096]; // page dir + 16 kernel entries + 1 user entry + alignment
+#define KERNEL_COUNT 16
+int *pg_dir, *pg_tbl[24];
+int *kern_pg_tbl[8];
+int *usr_pg_tbl[8];
 
 //char user_mem[4*4096*4096+4096]; //user space
 //int user_begin=32*1024*1024; //user start addr
@@ -139,10 +141,88 @@ setup_user_paging()
 {
   //YOUR CODE: lec7-spoc challenge-part2
 }
-  
+
+// 建立前32M的identity映射
+setup_paging()
+{
+  int i, j, addr;
+  // identity mapping
+  pg_dir = (int *)((((int)&pg_mem) + 4095) & -4096);
+  addr = (int)pg_dir + 4096;
+  pg_tbl[0] = addr;
+  pg_dir[0] = addr | PTE_P | PTE_W | PTE_U;
+  for (j = 0; j < 1024; ++j) {
+    pg_tbl[0][j] = (int)(j<<12) | PTE_P | PTE_W | PTE_U;
+  }
+  for (i = 1; i < 8; ++i) {
+    addr = (int)pg_tbl[i - 1] + 4096;
+    pg_tbl[i] = addr;
+    pg_dir[i] = addr | PTE_P | PTE_W | PTE_U;
+    for (j = 0; j < 1024; ++j) {
+      pg_tbl[i][j] = (int)((i << 22) + (j << 12)) | PTE_P | PTE_W | PTE_U;
+    }
+  }
+  // identity mapping end
+
+  // 0xC0000000 => 0x00000000
+  // 内核使用的页表起始地址
+  addr = (int)pg_dir + 4096 + 8 * 4096;
+  // pde for 0xC0000000
+  kern_pg_tbl[0] = addr;
+  pg_dir[768] = addr | PTE_P | PTE_W | PTE_U;
+  for (j = 0; j < 1024; ++j) {
+    kern_pg_tbl[0][j] = (int)(j<<12) | PTE_P | PTE_W | PTE_U;
+  }
+  for (i = 1; i < 16; ++i) {
+    addr = (int)kern_pg_tbl[i - 1] + 4096;
+    kern_pg_tbl[i] = addr;
+    pg_dir[768+i] = addr | PTE_P | PTE_W | PTE_U;
+    for (j = 0; j < 1024; ++j) {
+      kern_pg_tbl[i][j] = (int)((i << 22) + (j << 12)) | PTE_P | PTE_W;
+    }
+  }
+
+  // 0x40000000 => 0x02000000
+  addr = (int)pg_dir + 4096 + 24 * 4096;
+  // pde for 0x40000000,
+  usr_pg_tbl[0] = addr;
+  pg_dir[256] = addr | PTE_P | PTE_W | PTE_U;
+  for (j = 0; j < 1024; ++j) {
+    usr_pg_tbl[0][j] = (int)(j<<12)+USRPHY | PTE_P | PTE_W | PTE_U;
+    printf("pte: 0x%08x\n", usr_pg_tbl[0][j]);
+
+  }
+}
+
+// setupkvm()
+// {
+//   uint i, *pde, *pt;
+//
+//   pg_dir = pg_mem; // kalloc returns physical addresses here (kfree wont work until later on)
+//   // 把页表的首地址存在pg_tbl中
+//   for (i = 0; i < KERNEL_COUNT; ++i) {
+//
+//   }
+//   // 建立页目录表(0xC0000000, 0x00000000)
+//   for (i = 0; i < KERNEL_COUNT; ++i) {
+//     pg_dir[(P2V >> 22) + i] =
+//   }
+//   // 建立页表(0xC0000000, 0x00000000)
+//   for (i=0; i < KERNEL_COUNT; i++) {
+//     pde = &pg_dir[(P2V+i*PAGE) >> 22];
+//     if (*pde & PTE_P)
+//       pt = *pde & -PAGE;
+//     else
+//       *pde = (uint)(pt = memset(kalloc(), 0, PAGE)) | PTE_P | PTE_W;
+//     pt[((P2V+i) >> 12) & 0x3ff] = i | PTE_P | PTE_W;
+//   }
+// }
+
 setup_kernel_paging()
 {
-  //YOUR CODE: lec7-spoc challenge-part1
+  // identity mapping
+  setup_paging();
+  //
 }
 
 main()
@@ -150,19 +230,19 @@ main()
   int *ksp;// temp kernel stack pointer
   static char kstack[256]; // temp kernel stack
   static int endbss;     // last variable in bss segment
-  int t, d; 
-  
+  int t, d;
+
   current = 0;
   ivec(alltraps);
-  
+
   asm(STI);
-  
+
   printf("test timer...");
   t = 0;
   stmr(10000);
   while (!current) t++;
   printf("(t=%d)...ok\n",t);
-  
+
   printf("test bad physical address...");
   t = *(int *)0x20000000;
   printf("...ok\n");
@@ -174,26 +254,26 @@ main()
   // reposition stack within first 16M
   asm(LI, 4*1024*1024); // a = 4M
   asm(SSP); // sp = a
-  printf("set page table....\n"); 
+  printf("set page table....\n");
   setup_kernel_paging();
   setup_user_paging();
-  printf("set page table over\n"); 
-  
+  printf("set page table over\n");
+
   // turn on paging
   // set pg dir based_addr
   pdir(pg_dir);
   // enable page
   spage(1);
-  
+
   printf("kernel and user map...ok\n");
-  
+
   printf("test kernel page fault read 1...\n");
   *(int *)(KERSTART+4) = *(int *)(KERSTART);
   printf("...kernel ok 1 \n");
 
   printf("test user page fault read 1...\n");
   *(int *)(4) = *(int *)(USRSTART);
-  printf("..%d, .user ok 1 \n",  *(int *)(4));  
+  printf("..%d, .user ok 1 \n",  *(int *)(4));
 
   halt(0);
 }
